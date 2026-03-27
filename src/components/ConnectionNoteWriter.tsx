@@ -14,10 +14,12 @@ export default function ConnectionNoteWriter() {
   const [context, setContext] = useState('');
   const [output, setOutput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { trackUsage } = useUsageTracker();
+  const { trackUsage, checkLimit } = useUsageTracker();
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!checkLimit('connection')) return;
+    
     setIsLoading(true);
     setOutput('');
     
@@ -30,10 +32,10 @@ export default function ConnectionNoteWriter() {
       
       const result = await generateContent(prompt);
       setOutput(result);
-      trackUsage('connection');
     } catch (error) {
       setOutput(`**Fallback Generation Activated (API Error)**\n\nHi [Name],\n\nI'm looking to connect with leaders in [Industry]. I saw your profile and would love to add you to my network to follow your updates.\n\nBest,\n[Your Name]`);
     } finally {
+      trackUsage('connection');
       setIsLoading(false);
     }
   };

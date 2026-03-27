@@ -48,7 +48,18 @@ export async function generateJsonContent(prompt: string, retries = 0): Promise<
       }
     });
     const text = response.text || "[]";
-    return JSON.parse(text);
+    let parsed = JSON.parse(text);
+    
+    // If the model returned an object with a single array property, extract it
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const values = Object.values(parsed);
+      const arrayValue = values.find(val => Array.isArray(val));
+      if (arrayValue) {
+        parsed = arrayValue;
+      }
+    }
+    
+    return parsed;
   } catch (error: any) {
     console.error("Error generating JSON content:", error);
     

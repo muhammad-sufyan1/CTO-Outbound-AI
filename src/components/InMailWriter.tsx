@@ -14,10 +14,12 @@ export default function InMailWriter() {
   const [context, setContext] = useState('');
   const [output, setOutput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { trackUsage } = useUsageTracker();
+  const { trackUsage, checkLimit } = useUsageTracker();
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!checkLimit('inmail')) return;
+    
     setIsLoading(true);
     setOutput('');
     
@@ -30,10 +32,10 @@ export default function InMailWriter() {
       
       const result = await generateContent(prompt);
       setOutput(result);
-      trackUsage('inmail');
     } catch (error) {
       setOutput(`**Fallback Generation Activated (API Error)**\n\nHi [Name],\n\nI noticed your work at [Company] and wanted to connect. We help companies in your space streamline operations and drive growth.\n\nWould you be open to a brief chat next week?\n\nBest,\n[Your Name]`);
     } finally {
+      trackUsage('inmail');
       setIsLoading(false);
     }
   };

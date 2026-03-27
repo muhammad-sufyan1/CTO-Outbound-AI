@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Loader2, Newspaper, Lightbulb, List, FileText } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Loader2, Newspaper, Lightbulb, List, FileText, Check } from 'lucide-react';
 import { generateContent, generateJsonContent } from '../lib/gemini';
 import { 
   NEWSLETTER_PROMPT, 
@@ -9,14 +9,19 @@ import {
 } from '../lib/prompts';
 import Markdown from 'react-markdown';
 import { useUsageTracker } from '../lib/useUsageTracker';
+import { db, auth } from '../lib/firebase';
+import { collection, addDoc, query, where, getDocs, updateDoc, doc, deleteDoc } from 'firebase/firestore';
 
 type SubTab = 'topics' | 'outline' | 'writer';
 type PersonaKey = keyof typeof PERSONAS;
 
 interface TopicIdea {
+  id?: string;
   week: number;
   title: string;
   description: string;
+  scheduledTime?: string;
+  status: 'planned' | 'posted';
 }
 
 export default function NewsletterWriter() {
@@ -26,6 +31,7 @@ export default function NewsletterWriter() {
   // Topics State
   const [topics, setTopics] = useState<TopicIdea[]>([]);
   const [isGeneratingTopics, setIsGeneratingTopics] = useState(false);
+  const [isLoadingTopics, setIsLoadingTopics] = useState(true);
 
   // Outline State
   const [outlineTopic, setOutlineTopic] = useState('');
@@ -36,31 +42,143 @@ export default function NewsletterWriter() {
   const [topic, setTopic] = useState('');
   const [output, setOutput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { trackUsage } = useUsageTracker();
+  const { trackUsage, checkLimit } = useUsageTracker();
+
+  useEffect(() => {
+    setTopics([]);
+    setOutlineTopic('');
+    setOutlineOutput('');
+    setTopic('');
+    setOutput('');
+    fetchTopics();
+  }, [persona]);
+
+  const fetchTopics = async () => {
+    setIsLoadingTopics(true);
+    try {
+      if (!auth.currentUser) return;
+      
+      const q = query(
+        collection(db, 'topics'), 
+        where('uid', '==', auth.currentUser.uid),
+        where('persona', '==', persona),
+        where('module', '==', 'newsletter')
+      );
+      
+      const querySnapshot = await getDocs(q);
+      const fetchedTopics: TopicIdea[] = [];
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        fetchedTopics.push({
+          id: doc.id,
+          week: data.day || 0, // Using day field for week to match schema
+          title: data.title,
+          description: data.description,
+          scheduledTime: data.scheduledDate,
+          status: data.status as 'planned' | 'posted'
+        });
+      });
+      
+      // Sort by week
+      fetchedTopics.sort((a, b) => a.week - b.week);
+      setTopics(fetchedTopics);
+    } catch (error) {
+      console.error("Error fetching topics:", error);
+    } finally {
+      setIsLoadingTopics(false);
+    }
+  };
 
   const handleGenerateTopics = async () => {
+    if (!checkLimit('newsletter')) return;
+    
+    if (topics.length > 0) {
+      const confirm = window.confirm("This will overwrite your current newsletter topics for this persona. Are you sure?");
+      if (!confirm) return;
+    }
+
+    if (!auth.currentUser) {
+      alert("You must be logged in to save topics.");
+      return;
+    }
+
     setIsGeneratingTopics(true);
-    setTopics([]);
+    
     try {
+      // Delete old topics for this persona
+      const q = query(
+        collection(db, 'topics'), 
+        where('uid', '==', auth.currentUser.uid),
+        where('persona', '==', persona),
+        where('module', '==', 'newsletter')
+      );
+      const querySnapshot = await getDocs(q);
+      for (const d of querySnapshot.docs) {
+        await deleteDoc(doc(db, 'topics', d.id));
+      }
+
       const prompt = NEWSLETTER_TOPICS_PROMPT.replace('{persona}', PERSONAS[persona]);
       const result = await generateJsonContent(prompt);
-      setTopics(result);
-      trackUsage('newsletter');
+      
+      if (Array.isArray(result)) {
+        const newTopics: TopicIdea[] = [];
+        for (const item of result) {
+          const docRef = await addDoc(collection(db, 'topics'), {
+            uid: auth.currentUser.uid,
+            persona: persona,
+            module: 'newsletter',
+            title: item.title,
+            description: item.description,
+            scheduledDate: item.scheduledTime || '',
+            status: 'planned',
+            day: item.week || 0, // Using day field for week
+            createdAt: new Date().toISOString()
+          });
+          
+          newTopics.push({
+            id: docRef.id,
+            week: item.week || 0,
+            title: item.title,
+            description: item.description,
+            scheduledTime: item.scheduledTime || '',
+            status: 'planned'
+          });
+        }
+        
+        newTopics.sort((a, b) => a.week - b.week);
+        setTopics(newTopics);
+        trackUsage('newsletter');
+      } else {
+        throw new Error("Failed to parse topics array");
+      }
     } catch (error) {
       console.error(error);
-      setTopics([
-        { week: 1, title: 'The Future of Tech Leadership', description: 'Exploring how AI and automation are changing the role of the modern CTO.' },
-        { week: 2, title: 'Building Scalable Architectures', description: 'Best practices for designing systems that can handle rapid growth.' },
-        { week: 3, title: 'Managing Remote Engineering Teams', description: 'Strategies for keeping distributed teams engaged and productive.' },
-        { week: 4, title: 'Security in the Cloud Era', description: 'Key considerations for protecting your data in a cloud-first world.' }
-      ]);
+      alert("Failed to generate topics. Please try again.");
     } finally {
       setIsGeneratingTopics(false);
     }
   };
 
+  const toggleTopicStatus = async (topic: TopicIdea) => {
+    if (!topic.id) return;
+
+    const newStatus = topic.status === 'planned' ? 'posted' : 'planned';
+    
+    try {
+      await updateDoc(doc(db, 'topics', topic.id), {
+        status: newStatus
+      });
+      
+      setTopics(topics.map(t => t.id === topic.id ? { ...t, status: newStatus } : t));
+    } catch (error) {
+      console.error("Error updating status:", error);
+    }
+  };
+
   const handleGenerateOutline = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!checkLimit('newsletter')) return;
+    
     setIsGeneratingOutline(true);
     setOutlineOutput('');
     try {
@@ -69,16 +187,18 @@ export default function NewsletterWriter() {
         .replace('{topic}', outlineTopic);
       const result = await generateContent(prompt);
       setOutlineOutput(result);
-      trackUsage('newsletter');
     } catch (error) {
       setOutlineOutput(`**Fallback Generation Activated (API Error)**\n\n# Outline for: ${outlineTopic}\n\n## 1. Introduction\n- Hook the reader with a compelling statistic or story.\n- State the main problem or opportunity.\n\n## 2. The Core Issue\n- Dive deeper into why this matters right now.\n- Provide examples of companies struggling or succeeding.\n\n## 3. Actionable Strategies\n- Strategy A: Implementation details.\n- Strategy B: Key benefits.\n- Strategy C: Common pitfalls to avoid.\n\n## 4. Conclusion\n- Summarize the main takeaways.\n- Call to action (e.g., "Subscribe for more insights").`);
     } finally {
+      trackUsage('newsletter');
       setIsGeneratingOutline(false);
     }
   };
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!checkLimit('newsletter')) return;
+    
     setIsLoading(true);
     setOutput('');
     try {
@@ -87,10 +207,10 @@ export default function NewsletterWriter() {
         .replace('{topic}', topic);
       const result = await generateContent(prompt);
       setOutput(result);
-      trackUsage('newsletter');
     } catch (error) {
       setOutput(`**Fallback Generation Activated (API Error)**\n\n# ${topic}\n\nWelcome to this week's edition of the newsletter. Today, we're diving into a topic that's top of mind for many leaders in our industry.\n\n## The Changing Landscape\n\nOver the past few years, we've seen a massive shift in how organizations approach their technology stack. The focus has moved from simply keeping the lights on to driving real business value through innovation.\n\n## Key Takeaways\n\n1. **Embrace Agility:** The ability to pivot quickly is no longer a luxury; it's a necessity.\n2. **Invest in People:** Your technology is only as good as the team building and maintaining it.\n3. **Focus on Security:** As threats evolve, so must our defenses.\n\nI'd love to hear your thoughts on this. Reply to this email or leave a comment below!\n\nUntil next time,\n[Your Name]`);
     } finally {
+      trackUsage('newsletter');
       setIsLoading(false);
     }
   };
@@ -168,37 +288,63 @@ export default function NewsletterWriter() {
             </div>
             <button
               onClick={handleGenerateTopics}
-              disabled={isGeneratingTopics}
+              disabled={isGeneratingTopics || isLoadingTopics}
               className="flex items-center gap-2 bg-blue-600 text-white py-2 px-4 rounded-md font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isGeneratingTopics ? <Loader2 className="animate-spin" size={18} /> : <Lightbulb size={18} />}
-              {isGeneratingTopics ? 'Generating...' : 'Generate Topics'}
+              {isGeneratingTopics ? 'Generating...' : topics.length > 0 ? 'Regenerate Topics' : 'Generate Topics'}
             </button>
           </div>
 
-          {topics.length > 0 && (
+          {isLoadingTopics ? (
+            <div className="flex justify-center items-center h-48">
+              <Loader2 className="animate-spin text-blue-600" size={32} />
+            </div>
+          ) : topics.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {topics.map((topic, idx) => (
-                <div key={idx} className="bg-white p-5 rounded-xl border border-neutral-200 shadow-sm flex flex-col">
-                  <div className="flex items-center gap-2 mb-3">
+                <div key={topic.id || idx} className={`bg-white p-5 rounded-xl border transition-all flex flex-col ${topic.status === 'posted' ? 'border-neutral-200 bg-neutral-50/50 opacity-75' : 'border-neutral-200 shadow-sm hover:border-blue-300'}`}>
+                  <div className="flex items-center justify-between mb-3">
                     <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full">
                       Week {topic.week}
                     </span>
+                    <button 
+                      onClick={() => toggleTopicStatus(topic)}
+                      className={`p-1 rounded-full transition-colors ${topic.status === 'posted' ? 'bg-green-100 text-green-600 hover:bg-green-200' : 'bg-neutral-100 text-neutral-400 hover:bg-neutral-200'}`}
+                      title={topic.status === 'posted' ? 'Mark as planned' : 'Mark as posted'}
+                    >
+                      <Check size={14} className={topic.status === 'posted' ? 'opacity-100' : 'opacity-50'} />
+                    </button>
                   </div>
-                  <h4 className="font-semibold text-neutral-900 mb-2">{topic.title}</h4>
+                  <h4 className={`font-semibold mb-2 ${topic.status === 'posted' ? 'text-neutral-600 line-through' : 'text-neutral-900'}`}>{topic.title}</h4>
                   <p className="text-sm text-neutral-600 flex-1">{topic.description}</p>
+                  
+                  {topic.scheduledTime && (
+                    <div className="mt-3 text-[10px] font-medium text-neutral-500 bg-white/80 px-2 py-1 rounded border border-neutral-100 inline-block w-fit">
+                      🕒 {topic.scheduledTime}
+                    </div>
+                  )}
+                  
                   <button 
                     onClick={() => {
                       setOutlineTopic(topic.title);
                       setTopic(topic.title);
                       setActiveTab('outline');
                     }}
-                    className="mt-4 text-sm text-blue-600 font-medium hover:text-blue-700 text-left"
+                    className="mt-4 text-sm text-blue-600 font-medium hover:text-blue-700 text-left w-fit"
                   >
                     Use this topic →
                   </button>
                 </div>
               ))}
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl border border-neutral-200 border-dashed p-12 text-center">
+              <Lightbulb size={48} className="mx-auto text-neutral-300 mb-4" />
+              <h3 className="text-lg font-medium text-neutral-900 mb-2">No Topics Generated</h3>
+              <p className="text-neutral-500 max-w-md mx-auto">
+                Click the button above to generate a month's worth of newsletter topics.
+              </p>
             </div>
           )}
         </div>

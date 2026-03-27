@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Loader2, Globe, MessageCircle, FileText, Lightbulb } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Loader2, Globe, MessageCircle, FileText, Lightbulb, Check } from 'lucide-react';
 import { generateContent, generateJsonContent } from '../lib/gemini';
 import { 
   COMMUNITY_TOPICS_PROMPT, 
@@ -9,14 +9,19 @@ import {
 } from '../lib/prompts';
 import Markdown from 'react-markdown';
 import { useUsageTracker } from '../lib/useUsageTracker';
+import { db, auth } from '../lib/firebase';
+import { collection, addDoc, query, where, getDocs, updateDoc, doc, deleteDoc } from 'firebase/firestore';
 
 type SubTab = 'topics' | 'answer' | 'comment';
 type PersonaKey = keyof typeof PERSONAS;
 
 interface TopicIdea {
+  id?: string;
   platform: string;
   topic: string;
   angle: string;
+  scheduledTime?: string;
+  status: 'planned' | 'posted';
 }
 
 export default function CommunityWriter() {
@@ -26,6 +31,7 @@ export default function CommunityWriter() {
   // Topics State
   const [topics, setTopics] = useState<TopicIdea[]>([]);
   const [isGeneratingTopics, setIsGeneratingTopics] = useState(false);
+  const [isLoadingTopics, setIsLoadingTopics] = useState(true);
 
   // Answer State
   const [question, setQuestion] = useState('');
@@ -36,30 +42,140 @@ export default function CommunityWriter() {
   const [postContent, setPostContent] = useState('');
   const [commentOutput, setCommentOutput] = useState('');
   const [isGeneratingComment, setIsGeneratingComment] = useState(false);
-  const { trackUsage } = useUsageTracker();
+  const { trackUsage, checkLimit } = useUsageTracker();
+
+  useEffect(() => {
+    setTopics([]);
+    setQuestion('');
+    setAnswerOutput('');
+    setPostContent('');
+    setCommentOutput('');
+    fetchTopics();
+  }, [persona]);
+
+  const fetchTopics = async () => {
+    setIsLoadingTopics(true);
+    try {
+      if (!auth.currentUser) return;
+      
+      const q = query(
+        collection(db, 'topics'), 
+        where('uid', '==', auth.currentUser.uid),
+        where('persona', '==', persona),
+        where('module', '==', 'community')
+      );
+      
+      const querySnapshot = await getDocs(q);
+      const fetchedTopics: TopicIdea[] = [];
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        fetchedTopics.push({
+          id: doc.id,
+          platform: data.platform || 'General',
+          topic: data.title, // mapped to title in db
+          angle: data.description, // mapped to description in db
+          scheduledTime: data.scheduledDate,
+          status: data.status as 'planned' | 'posted'
+        });
+      });
+      
+      setTopics(fetchedTopics);
+    } catch (error) {
+      console.error("Error fetching topics:", error);
+    } finally {
+      setIsLoadingTopics(false);
+    }
+  };
 
   const handleGenerateTopics = async () => {
+    if (!checkLimit('community')) return;
+    
+    if (topics.length > 0) {
+      const confirm = window.confirm("This will overwrite your current community topics for this persona. Are you sure?");
+      if (!confirm) return;
+    }
+
+    if (!auth.currentUser) {
+      alert("You must be logged in to save topics.");
+      return;
+    }
+
     setIsGeneratingTopics(true);
-    setTopics([]);
+    
     try {
+      // Delete old topics for this persona
+      const q = query(
+        collection(db, 'topics'), 
+        where('uid', '==', auth.currentUser.uid),
+        where('persona', '==', persona),
+        where('module', '==', 'community')
+      );
+      const querySnapshot = await getDocs(q);
+      for (const d of querySnapshot.docs) {
+        await deleteDoc(doc(db, 'topics', d.id));
+      }
+
       const prompt = COMMUNITY_TOPICS_PROMPT.replace('{persona}', PERSONAS[persona]);
       const result = await generateJsonContent(prompt);
-      setTopics(result);
-      trackUsage('community');
+      
+      if (Array.isArray(result)) {
+        const newTopics: TopicIdea[] = [];
+        for (const item of result) {
+          const docRef = await addDoc(collection(db, 'topics'), {
+            uid: auth.currentUser.uid,
+            persona: persona,
+            module: 'community',
+            title: item.topic, // map topic to title
+            description: item.angle, // map angle to description
+            platform: item.platform,
+            scheduledDate: item.scheduledTime || '',
+            status: 'planned',
+            createdAt: new Date().toISOString()
+          });
+          
+          newTopics.push({
+            id: docRef.id,
+            platform: item.platform,
+            topic: item.topic,
+            angle: item.angle,
+            scheduledTime: item.scheduledTime || '',
+            status: 'planned'
+          });
+        }
+        
+        setTopics(newTopics);
+        trackUsage('community');
+      } else {
+        throw new Error("Failed to parse topics array");
+      }
     } catch (error) {
       console.error(error);
-      setTopics([
-        { platform: 'Reddit', topic: 'How to scale a web application from 1k to 100k users', angle: 'A technical deep-dive into database optimization and caching strategies.' },
-        { platform: 'Quora', topic: 'What is the biggest mistake CTOs make?', angle: 'Focusing on technology over people and business alignment.' },
-        { platform: 'Medium', topic: 'The true cost of technical debt', angle: 'How to quantify and manage technical debt before it slows down development.' }
-      ]);
+      alert("Failed to generate topics. Please try again.");
     } finally {
       setIsGeneratingTopics(false);
     }
   };
 
+  const toggleTopicStatus = async (topic: TopicIdea) => {
+    if (!topic.id) return;
+
+    const newStatus = topic.status === 'planned' ? 'posted' : 'planned';
+    
+    try {
+      await updateDoc(doc(db, 'topics', topic.id), {
+        status: newStatus
+      });
+      
+      setTopics(topics.map(t => t.id === topic.id ? { ...t, status: newStatus } : t));
+    } catch (error) {
+      console.error("Error updating status:", error);
+    }
+  };
+
   const handleGenerateAnswer = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!checkLimit('community')) return;
+    
     setIsGeneratingAnswer(true);
     setAnswerOutput('');
     try {
@@ -68,16 +184,18 @@ export default function CommunityWriter() {
         .replace('{question}', question);
       const result = await generateContent(prompt);
       setAnswerOutput(result);
-      trackUsage('community');
     } catch (error) {
       setAnswerOutput(`**Fallback Generation Activated (API Error)**\n\nThat's a great question. Based on my experience, the key to solving this is breaking it down into three main areas:\n\n1. **Architecture:** Ensure your foundation is solid. Consider using microservices if the application demands it, but don't over-engineer early on.\n2. **Process:** Implement robust CI/CD pipelines. Automation is your best friend when trying to move fast without breaking things.\n3. **People:** Empower your team to make decisions. A culture of ownership leads to better code and faster resolution of issues.\n\nI've seen companies struggle when they ignore any of these pillars. Focus on getting the basics right first.`);
     } finally {
+      trackUsage('community');
       setIsGeneratingAnswer(false);
     }
   };
 
   const handleGenerateComment = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!checkLimit('community')) return;
+    
     setIsGeneratingComment(true);
     setCommentOutput('');
     try {
@@ -86,10 +204,10 @@ export default function CommunityWriter() {
         .replace('{post}', postContent);
       const result = await generateContent(prompt);
       setCommentOutput(result);
-      trackUsage('community');
     } catch (error) {
       setCommentOutput(`**Fallback Generation Activated (API Error)**\n\nI completely agree with your take on this. It's often overlooked how much impact [Specific Point] can have on the overall success of a project. I've found that addressing it early saves a lot of headaches down the road. Thanks for sharing this perspective!`);
     } finally {
+      trackUsage('community');
       setIsGeneratingComment(false);
     }
   };
@@ -167,27 +285,62 @@ export default function CommunityWriter() {
             </div>
             <button
               onClick={handleGenerateTopics}
-              disabled={isGeneratingTopics}
+              disabled={isGeneratingTopics || isLoadingTopics}
               className="flex items-center gap-2 bg-blue-600 text-white py-2 px-4 rounded-md font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isGeneratingTopics ? <Loader2 className="animate-spin" size={18} /> : <Lightbulb size={18} />}
-              {isGeneratingTopics ? 'Generating...' : 'Generate Topics'}
+              {isGeneratingTopics ? 'Generating...' : topics.length > 0 ? 'Regenerate Topics' : 'Generate Topics'}
             </button>
           </div>
 
-          {topics.length > 0 && (
+          {isLoadingTopics ? (
+            <div className="flex justify-center items-center h-48">
+              <Loader2 className="animate-spin text-blue-600" size={32} />
+            </div>
+          ) : topics.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {topics.map((topic, idx) => (
-                <div key={idx} className="bg-white p-5 rounded-xl border border-neutral-200 shadow-sm flex flex-col">
-                  <div className="flex items-center gap-2 mb-3">
+                <div key={topic.id || idx} className={`bg-white p-5 rounded-xl border transition-all flex flex-col ${topic.status === 'posted' ? 'border-neutral-200 bg-neutral-50/50 opacity-75' : 'border-neutral-200 shadow-sm hover:border-blue-300'}`}>
+                  <div className="flex items-center justify-between mb-3">
                     <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full">
                       {topic.platform}
                     </span>
+                    <button 
+                      onClick={() => toggleTopicStatus(topic)}
+                      className={`p-1 rounded-full transition-colors ${topic.status === 'posted' ? 'bg-green-100 text-green-600 hover:bg-green-200' : 'bg-neutral-100 text-neutral-400 hover:bg-neutral-200'}`}
+                      title={topic.status === 'posted' ? 'Mark as planned' : 'Mark as posted'}
+                    >
+                      <Check size={14} className={topic.status === 'posted' ? 'opacity-100' : 'opacity-50'} />
+                    </button>
                   </div>
-                  <h4 className="font-semibold text-neutral-900 mb-2">{topic.topic}</h4>
+                  <h4 className={`font-semibold mb-2 ${topic.status === 'posted' ? 'text-neutral-600 line-through' : 'text-neutral-900'}`}>{topic.topic}</h4>
                   <p className="text-sm text-neutral-600 flex-1">{topic.angle}</p>
+                  
+                  {topic.scheduledTime && (
+                    <div className="mt-3 text-[10px] font-medium text-neutral-500 bg-white/80 px-2 py-1 rounded border border-neutral-100 inline-block w-fit">
+                      🕒 {topic.scheduledTime}
+                    </div>
+                  )}
+                  
+                  <button 
+                    onClick={() => {
+                      setQuestion(topic.topic);
+                      setActiveTab('answer');
+                    }}
+                    className="mt-4 text-sm text-blue-600 font-medium hover:text-blue-700 text-left w-fit"
+                  >
+                    Draft answer for this →
+                  </button>
                 </div>
               ))}
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl border border-neutral-200 border-dashed p-12 text-center">
+              <Lightbulb size={48} className="mx-auto text-neutral-300 mb-4" />
+              <h3 className="text-lg font-medium text-neutral-900 mb-2">No Topics Generated</h3>
+              <p className="text-neutral-500 max-w-md mx-auto">
+                Click the button above to generate high-traffic topics for community platforms.
+              </p>
             </div>
           )}
         </div>

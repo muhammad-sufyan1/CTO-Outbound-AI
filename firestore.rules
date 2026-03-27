@@ -1,0 +1,77 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+    
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+    
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function isValidTopic(data) {
+      return data.uid is string &&
+             data.persona is string && data.persona.size() > 0 && data.persona.size() < 20 &&
+             data.module is string && data.module.size() > 0 && data.module.size() < 20 &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 500 &&
+             data.status in ['planned', 'posted'] &&
+             data.createdAt is string;
+    }
+    
+    function isValidProspect(data) {
+      return data.uid is string &&
+             data.persona is string && data.persona.size() > 0 && data.persona.size() < 20 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.role is string && data.role.size() > 0 && data.role.size() < 100 &&
+             data.company is string && data.company.size() > 0 && data.company.size() < 100 &&
+             data.stage in ['Initial Message', 'Follow-up 1', 'Follow-up 2', 'Follow-up 3', 'Delete'] &&
+             data.messages is list &&
+             data.createdAt is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    match /topics/{topicId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && 
+                    hasRequiredFields(['uid', 'persona', 'module', 'title', 'status', 'createdAt']) &&
+                    isValidTopic(request.resource.data) &&
+                    uidUnchanged();
+      allow update: if isDocOwner() && 
+                    isValidTopic(request.resource.data) &&
+                    uidNotModified();
+      allow delete: if isDocOwner();
+    }
+    
+    match /prospects/{prospectId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && 
+                    hasRequiredFields(['uid', 'persona', 'name', 'role', 'company', 'stage', 'messages', 'createdAt']) &&
+                    isValidProspect(request.resource.data) &&
+                    uidUnchanged();
+      allow update: if isDocOwner() && 
+                    isValidProspect(request.resource.data) &&
+                    uidNotModified();
+      allow delete: if isDocOwner();
+    }
+  }
+}

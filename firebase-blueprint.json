@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "Topic": {
+      "title": "Topic",
+      "description": "A planned topic for a specific persona and module",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID" },
+        "persona": { "type": "string", "description": "CEO, CTO, or BDM" },
+        "module": { "type": "string", "description": "posts, newsletter, or community" },
+        "title": { "type": "string", "description": "Topic title" },
+        "description": { "type": "string", "description": "Topic description" },
+        "status": { "type": "string", "description": "planned or posted" },
+        "scheduledDate": { "type": "string", "description": "Scheduled date" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "persona", "module", "title", "status", "createdAt"]
+    },
+    "Prospect": {
+      "title": "Prospect",
+      "description": "A CRM prospect for the Message Writer",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID" },
+        "name": { "type": "string", "description": "Prospect Name" },
+        "role": { "type": "string", "description": "Prospect Role" },
+        "company": { "type": "string", "description": "Prospect Company" },
+        "context": { "type": "string", "description": "Optional Context" },
+        "status": { "type": "string", "description": "new, followup1, followup2, followup3, closed" },
+        "lastContactDate": { "type": "string", "format": "date-time" },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "content": { "type": "string" },
+              "type": { "type": "string" },
+              "date": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "topics/{topicId}": {
+      "schema": { "$ref": "#/entities/Topic" },
+      "description": "Stores generated topics for different modules and personas"
+    },
+    "prospects/{prospectId}": {
+      "schema": { "$ref": "#/entities/Prospect" },
+      "description": "Stores CRM prospects and their message history"
+    }
+  }
+}

@@ -20,10 +20,12 @@ export default function EmailWriter() {
   
   const [output, setOutput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { trackUsage } = useUsageTracker();
+  const { trackUsage, checkLimit } = useUsageTracker();
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!checkLimit('email')) return;
+    
     setIsLoading(true);
     setOutput('');
     
@@ -46,10 +48,10 @@ export default function EmailWriter() {
       
       const result = await generateContent(prompt);
       setOutput(result);
-      trackUsage('email');
     } catch (error) {
       setOutput(`**Fallback Generation Activated (API Error)**\n\n**Subject:** Quick question about your operations at [Company]\n\nHi [Name],\n\nI noticed [Company] has been growing recently. Often, companies at your stage struggle with scaling their internal systems effectively.\n\nWe specialize in helping businesses like yours optimize their processes and reduce overhead by up to 30%.\n\nWould you be open to a 10-minute chat next Tuesday to see if there's a fit?\n\nBest,\n[Your Name]`);
     } finally {
+      trackUsage('email');
       setIsLoading(false);
     }
   };

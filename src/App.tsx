@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   MessageSquare, 
   Mail, 
@@ -13,8 +13,11 @@ import {
   LayoutDashboard,
   Newspaper,
   Globe,
-  Activity
+  Activity,
+  LogOut
 } from 'lucide-react';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { auth, loginAnonymously, logout } from './lib/firebase';
 import InMailWriter from './components/InMailWriter';
 import CommentWriter from './components/CommentWriter';
 import ConnectionNoteWriter from './components/ConnectionNoteWriter';
@@ -23,34 +26,54 @@ import PostPlanner from './components/PostPlanner';
 import NewsletterWriter from './components/NewsletterWriter';
 import CommunityWriter from './components/CommunityWriter';
 import MessageWriter from './components/MessageWriter';
-import { useUsageTracker } from './lib/useUsageTracker';
+import { useUsageTracker, WIDGET_LIMITS } from './lib/useUsageTracker';
 
 type Tab = 'inmail' | 'comment' | 'connection' | 'email' | 'message' | 'post' | 'newsletter' | 'community';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('inmail');
   const { stats } = useUsageTracker();
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        setLoading(false);
+      } else {
+        await loginAnonymously();
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
   const tabs = [
-    { id: 'inmail', label: 'InMail Writer', icon: MessageSquare, limit: 20 },
-    { id: 'comment', label: 'Comment Writer', icon: FileText, limit: 30 },
-    { id: 'connection', label: 'Connection Note', icon: UserPlus, limit: 20 },
-    { id: 'email', label: 'Email Writer', icon: Mail, limit: 50 },
-    { id: 'message', label: 'Message Writer (CRM)', icon: MessageSquare, limit: 50 },
-    { id: 'post', label: 'Post Planner', icon: CalendarDays, limit: 5 },
-    { id: 'newsletter', label: 'Newsletter', icon: Newspaper, limit: 2 },
-    { id: 'community', label: 'Reddit & Quora', icon: Globe, limit: 10 },
+    { id: 'inmail', label: 'InMail Writer', icon: MessageSquare, limit: WIDGET_LIMITS.inmail },
+    { id: 'comment', label: 'Comment Writer', icon: FileText, limit: WIDGET_LIMITS.comment },
+    { id: 'connection', label: 'Connection Note', icon: UserPlus, limit: WIDGET_LIMITS.connection },
+    { id: 'email', label: 'Email Writer', icon: Mail, limit: WIDGET_LIMITS.email },
+    { id: 'message', label: 'Message Writer (CRM)', icon: MessageSquare, limit: WIDGET_LIMITS.message },
+    { id: 'post', label: 'Post Planner', icon: CalendarDays, limit: WIDGET_LIMITS.post },
+    { id: 'newsletter', label: 'Newsletter', icon: Newspaper, limit: WIDGET_LIMITS.newsletter },
+    { id: 'community', label: 'Reddit & Quora', icon: Globe, limit: WIDGET_LIMITS.community },
   ];
+
+  if (loading) {
+    return <div className="flex h-screen items-center justify-center bg-neutral-50">Loading...</div>;
+  }
 
   return (
     <div className="flex h-screen bg-neutral-50 text-neutral-900 font-sans">
       {/* Sidebar */}
       <aside className="w-64 bg-white border-r border-neutral-200 flex flex-col">
-        <div className="p-6 border-b border-neutral-200 flex items-center gap-3">
-          <div className="bg-blue-600 text-white p-2 rounded-lg">
-            <LayoutDashboard size={20} />
+        <div className="p-6 border-b border-neutral-200 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-blue-600 text-white p-2 rounded-lg">
+              <LayoutDashboard size={20} />
+            </div>
+            <h1 className="font-semibold text-lg tracking-tight">Outbound AI</h1>
           </div>
-          <h1 className="font-semibold text-lg tracking-tight">CTO Outbound AI</h1>
         </div>
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           {tabs.map((tab) => {
@@ -85,14 +108,17 @@ export default function App() {
             );
           })}
         </nav>
-        <div className="p-4 border-t border-neutral-200 text-xs text-neutral-500 flex flex-col gap-2">
+        <div className="p-4 border-t border-neutral-200 text-xs text-neutral-500 flex flex-col gap-3">
           <div className="flex items-center gap-2 text-neutral-600 font-medium">
             <Activity size={14} />
             Daily Checkpoint
           </div>
           <p>Optimize your outreach. Prioritize Emails and Messages for highest impact.</p>
-          <div className="mt-2 pt-2 border-t border-neutral-100">
-            Powered by Gemini 3.1 Pro
+          <div className="pt-3 border-t border-neutral-100 flex items-center justify-between">
+            <span className="truncate max-w-[140px]" title={user?.email || 'Anonymous User'}>{user?.email || 'Anonymous User'}</span>
+            <button onClick={logout} className="text-neutral-400 hover:text-red-500" title="Reset Data (Sign Out)">
+              <LogOut size={16} />
+            </button>
           </div>
         </div>
       </aside>

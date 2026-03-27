@@ -12,10 +12,12 @@ export default function CommentWriter() {
   const [postContent, setPostContent] = useState('');
   const [output, setOutput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { trackUsage } = useUsageTracker();
+  const { trackUsage, checkLimit } = useUsageTracker();
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!checkLimit('comment')) return;
+    
     setIsLoading(true);
     setOutput('');
     
@@ -25,10 +27,10 @@ export default function CommentWriter() {
         .replace('{postContent}', postContent);
       const result = await generateContent(prompt);
       setOutput(result);
-      trackUsage('comment');
     } catch (error) {
       setOutput(`**Fallback Generation Activated (API Error)**\n\nGreat insights! I completely agree with your point about [Topic]. In my experience, focusing on [Key Aspect] really helps drive better results. Thanks for sharing!`);
     } finally {
+      trackUsage('comment');
       setIsLoading(false);
     }
   };

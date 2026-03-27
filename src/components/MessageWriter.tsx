@@ -4,6 +4,8 @@ import { generateContent } from '../lib/gemini';
 import { MESSAGE_WRITER_PROMPT, PERSONAS } from '../lib/prompts';
 import Markdown from 'react-markdown';
 import { useUsageTracker } from '../lib/useUsageTracker';
+import { db, auth } from '../lib/firebase';
+import { collection, addDoc, query, where, getDocs, updateDoc, doc, deleteDoc, orderBy } from 'firebase/firestore';
 
 type PersonaKey = keyof typeof PERSONAS;
 type Stage = 'Initial Message' | 'Follow-up 1' | 'Follow-up 2' | 'Follow-up 3' | 'Delete';
@@ -22,6 +24,8 @@ interface Prospect {
   context: string;
   stage: Stage;
   messages: Message[];
+  persona: string;
+  createdAt: string;
 }
 
 export default function MessageWriter() {
@@ -29,7 +33,8 @@ export default function MessageWriter() {
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [selectedProspectId, setSelectedProspectId] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const { trackUsage } = useUsageTracker();
+  const [isLoadingProspects, setIsLoadingProspects] = useState(true);
+  const { trackUsage, checkLimit } = useUsageTracker();
 
   // New prospect form
   const [newName, setNewName] = useState('');
@@ -38,49 +43,97 @@ export default function MessageWriter() {
   const [newContext, setNewContext] = useState('');
 
   useEffect(() => {
-    const saved = localStorage.getItem('linkedin_prospects');
-    if (saved) {
-      try {
-        setProspects(JSON.parse(saved));
-      } catch (e) {
-        console.error('Failed to parse prospects', e);
-      }
-    }
-  }, []);
+    setProspects([]);
+    setSelectedProspectId(null);
+    fetchProspects();
+  }, [persona]);
 
-  const saveProspects = (updated: Prospect[]) => {
-    setProspects(updated);
-    localStorage.setItem('linkedin_prospects', JSON.stringify(updated));
+  const fetchProspects = async () => {
+    setIsLoadingProspects(true);
+    try {
+      if (!auth.currentUser) return;
+      
+      const q = query(
+        collection(db, 'prospects'), 
+        where('uid', '==', auth.currentUser.uid),
+        where('persona', '==', persona)
+      );
+      
+      const querySnapshot = await getDocs(q);
+      const fetchedProspects: Prospect[] = [];
+      querySnapshot.forEach((doc) => {
+        fetchedProspects.push({ id: doc.id, ...doc.data() } as Prospect);
+      });
+      
+      // Sort by createdAt descending locally since we don't have a composite index yet
+      fetchedProspects.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      
+      setProspects(fetchedProspects);
+    } catch (error) {
+      console.error("Error fetching prospects:", error);
+    } finally {
+      setIsLoadingProspects(false);
+    }
   };
 
-  const handleAddProspect = (e: React.FormEvent) => {
+  const handleAddProspect = async (e: React.FormEvent) => {
     e.preventDefault();
-    const newProspect: Prospect = {
-      id: Date.now().toString(),
+    if (!auth.currentUser) {
+      alert("You must be logged in to save prospects.");
+      return;
+    }
+
+    const newProspectData = {
+      uid: auth.currentUser.uid,
+      persona: persona,
       name: newName,
       role: newRole,
       company: newCompany,
       context: newContext,
-      stage: 'Initial Message',
+      stage: 'Initial Message' as Stage,
       messages: [],
+      createdAt: new Date().toISOString()
     };
-    saveProspects([newProspect, ...prospects]);
-    setNewName('');
-    setNewRole('');
-    setNewCompany('');
-    setNewContext('');
-    setSelectedProspectId(newProspect.id);
+
+    try {
+      const docRef = await addDoc(collection(db, 'prospects'), newProspectData);
+      
+      const newProspect: Prospect = {
+        id: docRef.id,
+        ...newProspectData
+      };
+      
+      setProspects([newProspect, ...prospects]);
+      setNewName('');
+      setNewRole('');
+      setNewCompany('');
+      setNewContext('');
+      setSelectedProspectId(newProspect.id);
+    } catch (error) {
+      console.error("Error adding prospect:", error);
+      alert("Failed to add prospect.");
+    }
   };
 
-  const handleDeleteProspect = (id: string) => {
-    saveProspects(prospects.filter(p => p.id !== id));
-    if (selectedProspectId === id) setSelectedProspectId(null);
+  const handleDeleteProspect = async (id: string) => {
+    const confirm = window.confirm("Are you sure you want to delete this prospect and all their messages?");
+    if (!confirm) return;
+
+    try {
+      await deleteDoc(doc(db, 'prospects', id));
+      setProspects(prospects.filter(p => p.id !== id));
+      if (selectedProspectId === id) setSelectedProspectId(null);
+    } catch (error) {
+      console.error("Error deleting prospect:", error);
+      alert("Failed to delete prospect.");
+    }
   };
 
   const selectedProspect = prospects.find(p => p.id === selectedProspectId);
 
   const handleGenerateMessage = async () => {
-    if (!selectedProspect) return;
+    if (!selectedProspect || !auth.currentUser) return;
+    if (!checkLimit('message')) return;
     
     setIsGenerating(true);
     try {
@@ -111,34 +164,25 @@ export default function MessageWriter() {
       else if (selectedProspect.stage === 'Follow-up 2') nextStage = 'Follow-up 3';
       else if (selectedProspect.stage === 'Follow-up 3') nextStage = 'Delete';
 
+      const updatedMessages = [...selectedProspect.messages, newMessage];
+
+      await updateDoc(doc(db, 'prospects', selectedProspect.id), {
+        stage: nextStage,
+        messages: updatedMessages
+      });
+
       const updatedProspect = {
         ...selectedProspect,
         stage: nextStage,
-        messages: [...selectedProspect.messages, newMessage],
+        messages: updatedMessages,
       };
 
-      saveProspects(prospects.map(p => p.id === updatedProspect.id ? updatedProspect : p));
-      trackUsage('message');
+      setProspects(prospects.map(p => p.id === updatedProspect.id ? updatedProspect : p));
     } catch (error) {
-      const fallbackMessage: Message = {
-        stage: selectedProspect.stage,
-        content: `**Fallback Generation Activated (API Error)**\n\nHi ${selectedProspect.name},\n\nJust following up on my previous message. Let me know if you have a few minutes to connect this week.\n\nBest,\n[Your Name]`,
-        date: new Date().toISOString(),
-      };
-      
-      let nextStage: Stage = 'Initial Message';
-      if (selectedProspect.stage === 'Initial Message') nextStage = 'Follow-up 1';
-      else if (selectedProspect.stage === 'Follow-up 1') nextStage = 'Follow-up 2';
-      else if (selectedProspect.stage === 'Follow-up 2') nextStage = 'Follow-up 3';
-      else if (selectedProspect.stage === 'Follow-up 3') nextStage = 'Delete';
-
-      const updatedProspect = {
-        ...selectedProspect,
-        stage: nextStage,
-        messages: [...selectedProspect.messages, fallbackMessage],
-      };
-      saveProspects(prospects.map(p => p.id === updatedProspect.id ? updatedProspect : p));
+      console.error("Error generating message:", error);
+      alert("Failed to generate message. Please try again.");
     } finally {
+      trackUsage('message');
       setIsGenerating(false);
     }
   };
@@ -191,7 +235,11 @@ export default function MessageWriter() {
               <span className="text-xs bg-neutral-200 text-neutral-700 px-2 py-0.5 rounded-full">{prospects.length}</span>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {prospects.length === 0 ? (
+              {isLoadingProspects ? (
+                <div className="flex justify-center items-center p-8">
+                  <Loader2 className="animate-spin text-blue-600" size={24} />
+                </div>
+              ) : prospects.length === 0 ? (
                 <div className="p-4 text-center text-sm text-neutral-500 italic">No prospects added yet.</div>
               ) : (
                 prospects.map(p => (
