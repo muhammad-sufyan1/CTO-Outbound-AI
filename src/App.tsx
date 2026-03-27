@@ -1,0 +1,115 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { useState } from 'react';
+import { 
+  MessageSquare, 
+  Mail, 
+  FileText, 
+  CalendarDays, 
+  UserPlus,
+  LayoutDashboard,
+  Newspaper,
+  Globe,
+  Activity
+} from 'lucide-react';
+import InMailWriter from './components/InMailWriter';
+import CommentWriter from './components/CommentWriter';
+import ConnectionNoteWriter from './components/ConnectionNoteWriter';
+import EmailWriter from './components/EmailWriter';
+import PostPlanner from './components/PostPlanner';
+import NewsletterWriter from './components/NewsletterWriter';
+import CommunityWriter from './components/CommunityWriter';
+import MessageWriter from './components/MessageWriter';
+import { useUsageTracker } from './lib/useUsageTracker';
+
+type Tab = 'inmail' | 'comment' | 'connection' | 'email' | 'message' | 'post' | 'newsletter' | 'community';
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<Tab>('inmail');
+  const { stats } = useUsageTracker();
+
+  const tabs = [
+    { id: 'inmail', label: 'InMail Writer', icon: MessageSquare, limit: 20 },
+    { id: 'comment', label: 'Comment Writer', icon: FileText, limit: 30 },
+    { id: 'connection', label: 'Connection Note', icon: UserPlus, limit: 20 },
+    { id: 'email', label: 'Email Writer', icon: Mail, limit: 50 },
+    { id: 'message', label: 'Message Writer (CRM)', icon: MessageSquare, limit: 50 },
+    { id: 'post', label: 'Post Planner', icon: CalendarDays, limit: 5 },
+    { id: 'newsletter', label: 'Newsletter', icon: Newspaper, limit: 2 },
+    { id: 'community', label: 'Reddit & Quora', icon: Globe, limit: 10 },
+  ];
+
+  return (
+    <div className="flex h-screen bg-neutral-50 text-neutral-900 font-sans">
+      {/* Sidebar */}
+      <aside className="w-64 bg-white border-r border-neutral-200 flex flex-col">
+        <div className="p-6 border-b border-neutral-200 flex items-center gap-3">
+          <div className="bg-blue-600 text-white p-2 rounded-lg">
+            <LayoutDashboard size={20} />
+          </div>
+          <h1 className="font-semibold text-lg tracking-tight">CTO Outbound AI</h1>
+        </div>
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            const usageCount = stats.counts[tab.id] || 0;
+            const usagePercent = Math.min(100, (usageCount / tab.limit) * 100);
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as Tab)}
+                className={`w-full flex flex-col gap-1 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${
+                  isActive 
+                    ? 'bg-blue-50 text-blue-700' 
+                    : 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900'
+                }`}
+              >
+                <div className="flex items-center gap-3 w-full">
+                  <Icon size={18} className={isActive ? 'text-blue-600' : 'text-neutral-400'} />
+                  <span className="flex-1 text-left">{tab.label}</span>
+                  <span className="text-[10px] font-mono bg-white px-1.5 py-0.5 rounded border border-neutral-200 text-neutral-500">
+                    {usageCount}/{tab.limit}
+                  </span>
+                </div>
+                <div className="w-full bg-neutral-200 rounded-full h-1 mt-1 overflow-hidden">
+                  <div 
+                    className={`h-1 rounded-full ${usagePercent > 90 ? 'bg-red-500' : usagePercent > 70 ? 'bg-yellow-500' : 'bg-blue-500'}`} 
+                    style={{ width: `${usagePercent}%` }}
+                  ></div>
+                </div>
+              </button>
+            );
+          })}
+        </nav>
+        <div className="p-4 border-t border-neutral-200 text-xs text-neutral-500 flex flex-col gap-2">
+          <div className="flex items-center gap-2 text-neutral-600 font-medium">
+            <Activity size={14} />
+            Daily Checkpoint
+          </div>
+          <p>Optimize your outreach. Prioritize Emails and Messages for highest impact.</p>
+          <div className="mt-2 pt-2 border-t border-neutral-100">
+            Powered by Gemini 3.1 Pro
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="max-w-5xl mx-auto p-8">
+          <div className={activeTab === 'inmail' ? 'block' : 'hidden'}><InMailWriter /></div>
+          <div className={activeTab === 'comment' ? 'block' : 'hidden'}><CommentWriter /></div>
+          <div className={activeTab === 'connection' ? 'block' : 'hidden'}><ConnectionNoteWriter /></div>
+          <div className={activeTab === 'email' ? 'block' : 'hidden'}><EmailWriter /></div>
+          <div className={activeTab === 'message' ? 'block' : 'hidden'}><MessageWriter /></div>
+          <div className={activeTab === 'post' ? 'block' : 'hidden'}><PostPlanner /></div>
+          <div className={activeTab === 'newsletter' ? 'block' : 'hidden'}><NewsletterWriter /></div>
+          <div className={activeTab === 'community' ? 'block' : 'hidden'}><CommunityWriter /></div>
+        </div>
+      </main>
+    </div>
+  );
+}
